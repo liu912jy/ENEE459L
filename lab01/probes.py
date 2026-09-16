@@ -143,6 +143,13 @@ def probe_memory_total_kb(root: Path = Path("/")) -> dict[str, Any]:
     ever sees the pool. Students are expected to notice and to explain it in
     their report rather than round it up.
     """
+    src = "/proc/meminfo"
+    raw = read_text(root, src)
+
+    if not raw:
+        return unknown(src, "device memory info absent")
+    
+    m = re.search(r"^MemTotal:\s+(\d+)\s*kB", raw, re.MULTILINE)
     
     return {"value": int(m.group(1)), "source": src, "status": "ok"}
 
@@ -159,7 +166,31 @@ def probe_root_source(root: Path = Path("/")) -> dict[str, Any]:
     /proc/mounts is preferred over `findmnt` because it needs no external
     binary and no elevation, and because it is what findmnt reads anyway.
     """
+
+    src = "/proc/mounts"
+    raw = read_text(root, src)
     
+
+    if not raw:
+        return unknown(src, "device memory info absent")
+    
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        device, mountpoint = parts[0], parts[1]
+        if mountpoint != "/":
+            continue
+
+        if device.startswith("/dev/nvme"):
+            kind = "nvme"
+        elif device.startswith(("/dev/mmcblk", "/dev/sd")):
+            kind = "ssd"
+        else:
+            kind = "other"
+
+        return {"value": device, "kind": kind, "source": src, "status": "ok"}
+
     return unknown(src, "no root mount entry found in mount table")
 
 
@@ -172,10 +203,34 @@ def probe_nvme_present(root: Path = Path("/")) -> dict[str, Any]:
     the right branch.
     """
     
+    src = "/sys/block/nvme0n1"
+    model_src = "/sys/block/nvme0n1/device/model"
+
+    if not (Path(root) / src.lstrip("/")).exists():
+        return {
+            "value": False,
+            "model": None,
+            "source": src,
+            "status": "ok",
+        }
+
+    raw_model = read_text(root, model_src)
+    if not raw_model:
+        return {
+            "value": True,
+            "model": None,
+            "source": model_src,
+            "status": "unknown",
+            "detail": "nvme0n1 present but model node unreadable",
+        }
+
+    model = raw_model.replace("\x00", " ").strip()
+    model = re.sub(r"\s+", " ", model)
+    
     return {
-        "value": ,
-        "model": ,
-        "source": ,
+        "value": True,
+        "model": model,
+        "source": model_src,
         "status": "ok",
     }
 
@@ -191,13 +246,50 @@ def probe_pcie_link(root: Path = Path("/"), lspci_output: str | None = None) -> 
     `lspci_output` exists so the tests can drive this without root or hardware.
     In normal use it is None and the probe shells out.
     """
-        
+    
+    src = "lspci -vv"
+
+    if lspci_output is None:
+        lspci_output = run(["lspci", "-vv"])
+    if not lspci_output:
+        return unknown(src, "lspci -vv produced no output (lspci missing or no PCI bus)")
+
+    nvme_block = None
+    for block in lspci_output.split("\n\n"):
+        if "Non-Volatile memory controller" in block:
+            nvme_block = block
+            break
+
+    if nvme_block is None:
+        return unknown(src, "no NVMe controller block found in lspci -vv output")
+
+    cap_line = None
+    sta_line = None
+    for line in nvme_block.splitlines():
+        if "LnkCap:" in line:
+            cap_line = line
+        elif "LnkSta:" in line:
+            sta_line = line
+
+    if cap_line is None or sta_line is None:
+        return unknown(src, "LnkCap or LnkSta line missing from NVMe block")
+
+    capability = _parse_link_line(cap_line)
+    negotiated = _parse_link_line(sta_line)
+
+    if negotiated["gts"] is None or capability["gts"] is None:
+        return unknown(src, "could not parse Speed from LnkCap/LnkSta")
+
+    globals()["capability"] = capability
+    globals()["negotiated"] = negotiated
+    interpretation = generate_interpretation_string(negotiated["gts"], capability["gts"])
+
     return {
-        "value":,
-        "negotiated": ,
-        "capability": ,
-        "interpretation": ,
-        "source": ,
+        "value": negotiated["gen"],
+        "negotiated": negotiated,
+        "capability": capability,
+        "interpretation": interpretation,
+        "source": src,
         "status": "ok",
     }
 
@@ -210,10 +302,45 @@ def probe_thermal_zones(root: Path = Path("/")) -> dict[str, Any]:
     than once, and it is a good, cheap lesson in reading units before reading
     numbers.
     """
+    
+    src = "/sys/class/thermal/thermal_zone*/temp"
+    base = Path(root) / "sys/class/thermal"
+
+    zone_dirs = sorted(base.glob("thermal_zone*"))
+    if not zone_dirs:
+        return unknown(src, "no thermal zones exposed by the kernel")
+
+    zones = []
+    for zdir in zone_dirs:
+        ztype = read_text(root, f"/sys/class/thermal/{zdir.name}/type")
+
+        # 不走 read_text 读 temp：sysfs 伪文件会触发 pathlib 的 TypeError
+        temp_path = Path(root) / "sys/class/thermal" / zdir.name / "temp"
+        try:
+            ztemp = temp_path.read_text(errors="replace").strip("\x00").strip()
+        except (OSError, UnicodeDecodeError, TypeError):
+            ztemp = None
+
+        if not ztemp:
+            continue
+        try:
+            temp_c = int(ztemp) / 1000.0
+        except ValueError:
+            continue
+
+        zones.append({
+            "zone": zdir.name,
+            "type": ztype,
+            "temp_c": temp_c,
+        })
+
+    if not zones:
+        return unknown(src, "thermal zones present but none reported a readable temperature")
+
     return {
-        "value": ,
-        "zones": ,
-        "source": ,
+        "value": max(z["temp_c"] for z in zones),
+        "zones": zones,
+        "source": src,
         "status": "ok",
     }
 
@@ -226,10 +353,26 @@ def probe_power_mode(root: Path = Path("/"), nvpmodel_output: str | None = None)
     same model are usually reporting different power modes, and without this
     field there is no way to find that out after the fact.
     """
+    src = "nvpmodel -q"
+
+    if nvpmodel_output is None:
+        nvpmodel_output = run(["nvpmodel", "-q"])
+    if not nvpmodel_output:
+        return unknown(src, "nvpmodel not installed or returned no output")
+
+    m = re.search(r"NV Power Mode:\s*(.+)", nvpmodel_output)
+    if not m:
+        return unknown(src, "NV Power Mode line not found in nvpmodel output")
+
+    mode_name = m.group(1).strip()
+
+    mid = re.search(r"(\d+)", mode_name)
+    mode_id = int(mid.group(1)) if mid else None
+
     return {
-        "value": ,
-        "mode_id": ,
-        "source": ,
+        "value": mode_name,
+        "mode_id": mode_id,
+        "source": src,
         "status": "ok",
     }
 
