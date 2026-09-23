@@ -1,9 +1,18 @@
 {
     "probe_torch": {
-        "value": null,
+        "value": "2.14.0+cu130",
         "source": "import torch",
-        "status": "unknown",
-        "detail": "torch is not importable: No module named 'torch'"
+        "status": "ok",
+        "version": {
+            "raw": "2.14.0+cu130",
+            "public": "2.14.0",
+            "local": "cu130",
+            "nvidia_build": false
+        },
+        "cuda_available": false,
+        "cuda_version": "13.0",
+        "device_name": null,
+        "diagnosis": "this wheel has no NVIDIA local version tag and cannot see the GPU \u2014 it is almost certainly a stock PyPI wheel and must be replaced from the Jetson index"
     },
     "probe_cuda": {
         "value": "12.6.11",
