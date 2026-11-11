@@ -82,30 +82,240 @@ def _percentile(xs: Sequence[float], q: float) -> float:
 
 
 def latency_report(ms: Iterable[float]) -> dict[str, Any]:
-    pass
+    """Get the latency information from the given times."""
+    times = []
+
+    for t in ms:
+        t = _finite(t, "latency")
+        if t < 0:
+            raise AgreementError("Latency cannot be negative")
+        times.append(t)
+
+    if len(times) == 0:
+        raise AgreementError("No data")
+
+    n = len(times)
+    avg = sum(times) / n
+    worst = max(times)
+
+    p50 = _percentile(times, 50)
+    p95 = _percentile(times, 95)
+    p99 = _percentile(times, 99)
+
+    result = {
+        "n": n,
+        "mean": avg,
+        "worst": worst,
+        "p50": p50,
+        "p95": p95,
+        "p99": p99,
+        "jitter": p95 - p50
+    }
+
+    return result
 
 
 def speedup(base_ms: float, other_ms: float) -> dict[str, Any]:
-    pass
+    """Calculate how much faster the second time is."""
+    base = _finite(base_ms, "base")
+    other = _finite(other_ms, "other")
+
+    if base <= 0 or other <= 0:
+        raise AgreementError("Time must be greater than zero")
+
+    factor = base / other
+    saved = base - other
+
+    if factor > 1:
+        faster = True
+    else:
+        faster = False
+
+    return {
+        "factor": factor,
+        "faster": faster,
+        "saved_ms": saved
+    }
 
 
 def max_abs_dev(a: Sequence[float], b: Sequence[float]) -> dict[str, Any]:
-    pass
+    """Find the biggest difference between two lists."""
+    if len(a) == 0 or len(a) != len(b):
+        raise AgreementError("Lists have wrong lengths")
+
+    list_a = []
+    list_b = []
+
+    for x in a:
+        list_a.append(_finite(x, "a"))
+
+    for x in b:
+        list_b.append(_finite(x, "b"))
+
+    biggest = 0
+    index = 0
+
+    for i in range(len(list_a)):
+        difference = abs(list_a[i] - list_b[i])
+
+        if difference > biggest:
+            biggest = difference
+            index = i
+
+    return {
+        "max_abs": biggest,
+        "index": index,
+        "a": list_a[index],
+        "b": list_b[index],
+        "n": len(list_a)
+    }
 
 
 def max_rel_dev(a: Sequence[float], b: Sequence[float],
                 floor: float = REL_FLOOR) -> dict[str, Any]:
-    pass
+    """Find the biggest relative difference between two lists."""
+    floor = _finite(floor, "floor")
+
+    if floor <= 0:
+        raise AgreementError("Invalid floor")
+
+    if len(a) == 0 or len(a) != len(b):
+        raise AgreementError("Lists have wrong lengths")
+
+    list_a = []
+    list_b = []
+
+    for x in a:
+        list_a.append(_finite(x, "a"))
+
+    for x in b:
+        list_b.append(_finite(x, "b"))
+
+    biggest = -1
+    index = 0
+    floored = 0
+    smallest = abs(list_b[0])
+
+    for i in range(len(list_a)):
+        denominator = abs(list_b[i])
+
+        if denominator < smallest:
+            smallest = denominator
+
+        if denominator < floor:
+            floored += 1
+            denominator = floor
+
+        difference = abs(list_a[i] - list_b[i])
+        relative = difference / denominator
+
+        if relative > biggest:
+            biggest = relative
+            index = i
+
+    return {
+        "max_rel": biggest,
+        "index": index,
+        "floored": floored,
+        "denom_min": smallest,
+        "n": len(list_a)
+    }
 
 
 def top1_agreement(rows_a: Sequence[Sequence[float]],
                    rows_b: Sequence[Sequence[float]]) -> dict[str, Any]:
-    pass
+    """Check if two models predict the same classes."""
+    if len(rows_a) == 0 or len(rows_a) != len(rows_b):
+        raise AgreementError("Wrong number of rows")
+
+    agree = 0
+    first = None
+
+    for i in range(len(rows_a)):
+        a = []
+        b = []
+
+        for x in rows_a[i]:
+            a.append(_finite(x, "a"))
+
+        for x in rows_b[i]:
+            b.append(_finite(x, "b"))
+
+        if len(a) == 0 or len(a) != len(b):
+            raise AgreementError("Wrong row size")
+
+        best_a = a.index(max(a))
+        best_b = b.index(max(b))
+
+        if best_a == best_b:
+            agree += 1
+        else:
+            if first is None:
+                first = i
+
+    n = len(rows_a)
+
+    return {
+        "n": n,
+        "agree": agree,
+        "disagree": n - agree,
+        "rate": agree / n,
+        "first_disagreement": first
+    }
 
 
 def decision_margin(rows: Sequence[Sequence[float]],
                     tol: float) -> dict[str, Any]:
-    pass
+    """Check the difference between the two highest scores."""
+    tol = _finite(tol, "tol")
+
+    if tol < 0:
+        raise AgreementError("Invalid tolerance")
+
+    if len(rows) == 0:
+        raise AgreementError("No rows")
+
+    margins = []
+
+    for row in rows:
+        scores = []
+
+        for x in row:
+            scores.append(_finite(x, "score"))
+
+        if len(scores) < 2:
+            raise AgreementError("Not enough scores")
+
+        scores.sort(reverse=True)
+        margin = scores[0] - scores[1]
+        margins.append(margin)
+
+    smallest = min(margins)
+    index = margins.index(smallest)
+    avg = sum(margins) / len(margins)
+    median = _percentile(margins, 50)
+
+    below = 0
+
+    for m in margins:
+        if m < tol:
+            below += 1
+
+    if below == 0:
+        safe = True
+    else:
+        safe = False
+
+    return {
+        "n": len(margins),
+        "min": smallest,
+        "median": median,
+        "mean": avg,
+        "argmin": index,
+        "below_tol": below,
+        "safe": safe
+    }
+
 
 #############################################################
 ###############  Main function starts here ##################
