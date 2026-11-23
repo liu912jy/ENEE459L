@@ -260,11 +260,85 @@ def base_rate_sentence(pr: dict) -> str:
 #######################################################
 
 def confusion(values, labels, threshold: float) -> dict:
-    pass
+    """Count true and false predictions."""
+    scores = _score_list(values, "values")
+    t = _check_score(threshold, "threshold")
+
+    lbls = []
+
+    for i, y in enumerate(labels):
+        if isinstance(y, bool) or y not in (0, 1):
+            raise DecideError(f"labels[{i}] is {y!r}; must be integer 0 or 1.")
+
+        lbls.append(int(y))
+
+    if len(scores) != len(lbls):
+        raise DecideError(
+            f"values has {len(scores)} items and labels has {len(lbls)}."
+        )
+
+    tp = 0
+    fp = 0
+    tn = 0
+    fn = 0
+
+    for s, y in zip(scores, lbls):
+        pred = s >= t
+
+        if pred and y == 1:
+            tp += 1
+        elif pred and y == 0:
+            fp += 1
+        elif not pred and y == 1:
+            fn += 1
+        else:
+            tn += 1
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "windows": len(scores)
+    }
 
 
 def rates(cm: dict) -> dict:
-    pass
+    """Calculate classification rates."""
+    tp = cm["tp"]
+    fp = cm["fp"]
+    tn = cm["tn"]
+    fn = cm["fn"]
+
+    tpr = None
+    fpr = None
+    precision = None
+
+    if tp + fn > 0:
+        tpr = tp / (tp + fn)
+
+    if fp + tn > 0:
+        fpr = fp / (fp + tn)
+
+    if tp + fp > 0:
+        precision = tp / (tp + fp)
+
+    recall = tpr
+    f1 = None
+
+    if precision is not None and recall is not None:
+        if precision + recall > 0:
+            f1 = 2.0 * precision * recall / (precision + recall)
+        elif precision == 0.0 and recall == 0.0:
+            f1 = 0.0
+
+    return {
+        "tpr": tpr,
+        "fpr": fpr,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1
+    }
 
 
 def precision_at_base_rate(
@@ -274,7 +348,44 @@ def precision_at_base_rate(
     positives_per_event: int,
     hop_s: float,
 ) -> dict:
-    pass
+    """Calculate precision for rare events."""
+    t_rate = _check_score(tpr, "tpr")
+    f_rate = _check_score(fpr, "fpr")
+    h = _check_pos(hop_s, "hop_s")
+
+    if isinstance(events_per_hour, bool) or not isinstance(events_per_hour, int) or events_per_hour < 0:
+        raise DecideError("events_per_hour must be a non-negative integer.")
+
+    if isinstance(positives_per_event, bool) or not isinstance(positives_per_event, int) or positives_per_event <= 0:
+        raise DecideError("positives_per_event must be a positive integer.")
+
+    decisions = SECONDS_PER_HOUR / h
+    positives = events_per_hour * positives_per_event
+
+    if positives > decisions:
+        raise DecideError("positives exceed total decisions per hour.")
+
+    negatives = decisions - positives
+
+    expected_tp = t_rate * positives
+    expected_fp = f_rate * negatives
+
+    denom = expected_tp + expected_fp
+    precision = None
+
+    if denom > 0:
+        precision = expected_tp / denom
+
+    base_rate = positives / decisions
+
+    return {
+        "positives": positives,
+        "negatives": negatives,
+        "expected_tp": expected_tp,
+        "expected_fp": expected_fp,
+        "precision": precision,
+        "base_rate": base_rate
+    }
 
 
 #######################################################

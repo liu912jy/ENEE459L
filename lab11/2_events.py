@@ -342,16 +342,139 @@ def trade_sentence(trade: dict) -> str:
 #######################################################
 
 def k_of_n(flags, k: int, n: int) -> list:
-    pass
+    """Apply voting to the recent windows."""
+    seq = _flags(flags, "flags")
+
+    kk = int(k)
+    nn = int(n)
+
+    if nn < 1:
+        raise EventError(f"n is {n!r}; a vote looks at least one window.")
+
+    if kk < 1 or kk > nn:
+        raise EventError(f"k is {k!r} and n is {n!r}; k must be between 1 and n.")
+
+    out = []
+
+    for i in range(len(seq)):
+        lo = max(0, i - nn + 1)
+        count = 0
+
+        for v in seq[lo:i + 1]:
+            if v:
+                count += 1
+
+        out.append(count >= kk)
+
+    return out
+
 
 def hysteresis(values, enter: float, leave: float) -> list:
-    pass
+    """Apply two thresholds to control the detector."""
+    e = float(enter)
+    l = float(leave)
+
+    for v, what in ((e, "enter"), (l, "leave")):
+        if v < 0.0 or v > 1.0:
+            raise EventError(f"{what} is {v}; must be between 0 and 1.")
+
+    if l > e:
+        raise EventError("Hysteresis must leave below where it enters.")
+
+    on = False
+    out = []
+
+    for s in _scores(values, "values"):
+        if on:
+            if s < l:
+                on = False
+        else:
+            if s >= e:
+                on = True
+
+        out.append(on)
+
+    return out
+
 
 def match_events(predicted_s, truth_s, collar_s: float) -> dict:
-    pass
+    """Match predicted events with true events."""
+    pred = _times(predicted_s, "predicted_s")
+    truth = _times(truth_s, "truth_s")
+
+    collar = float(collar_s)
+
+    if collar < 0.0:
+        raise EventError(f"collar_s is {collar}.")
+
+    used = [False] * len(pred)
+    matches = []
+
+    for t in truth:
+        best = None
+
+        for j, p in enumerate(pred):
+            if used[j]:
+                continue
+
+            d = abs(p - t)
+
+            if d > collar:
+                continue
+
+            if best is None or d < best[0]:
+                best = (d, j)
+
+        if best is not None:
+            j = best[1]
+            used[j] = True
+
+            matches.append({
+                "truth_s": t,
+                "predicted_s": pred[j],
+                "delta_s": pred[j] - t
+            })
+
+    false_alarms = 0
+
+    for u in used:
+        if not u:
+            false_alarms += 1
+
+    return {
+        "matches": matches,
+        "hits": len(matches),
+        "misses": len(truth) - len(matches),
+        "false_alarms": false_alarms,
+        "collar_s": collar
+    }
+
 
 def refractory(flags, hop_s: float, refractory_s: float) -> list:
-    pass
+    """Remove events that occur too close together."""
+    hop = float(hop_s)
+    ref = float(refractory_s)
+
+    if hop <= 0.0:
+        raise EventError(f"hop_s is {hop_s!r}.")
+
+    if ref < 0.0:
+        raise EventError(f"refractory_s is {refractory_s!r}.")
+
+    out = []
+    last_t = None
+
+    for idx in rising_edges(flags):
+        t = idx * hop
+
+        if last_t is not None:
+            if t - last_t < ref:
+                continue
+
+        out.append(idx)
+        last_t = t
+
+    return out
 
 
 #######################################################
